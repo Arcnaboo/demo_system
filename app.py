@@ -64,11 +64,20 @@ class AgentAction(BaseModel):
 # -----------------------------------------------------
 async def fetch_all_users():
     async with pool.connection() as conn:
-        rows = await conn.execute(
-            "SELECT id, email, value FROM users ORDER BY id ASC"
-        )
+        rows = await conn.execute("SELECT id, email, value FROM users ORDER BY id ASC")
         rows = await rows.fetchall()
-        return rows
+        # Convert Row objects to dicts
+        users = []
+        for r in rows:
+            users.append({
+                "id": r[0],
+                "email": r[1],
+                "value": r[2]
+            })
+        return users
+
+
+
 
 
 # -----------------------------------------------------
