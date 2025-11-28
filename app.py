@@ -17,7 +17,7 @@ app = FastAPI()
 # -----------------------------------------------------
 # DATABASE POOL (Python 3.13 SAFE)
 # -----------------------------------------------------
-pool = AsyncConnectionPool(conninfo=DATABASE_URL, row_factory=dict_row)
+pool = AsyncConnectionPool(conninfo=DATABASE_URL)
 
 
 # -----------------------------------------------------
