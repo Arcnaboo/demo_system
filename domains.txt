@@ -1,0 +1,6 @@
+hotmail.com
+gmail.com
+mail.com
+outlook.com
+live.com
+example.com
