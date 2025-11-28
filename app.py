@@ -1,29 +1,38 @@
-import asyncpg
+import logging
+import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import logging
 from generators import generator
-import os
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
+
 logging.basicConfig(level=logging.INFO)
 
-DATABASE_URL = os.getenv("DATABASE")  
+DATABASE_URL = os.getenv("DATABASE")
 
 app = FastAPI()
+
+# -----------------------------------------------------
+# DATABASE POOL (Python 3.13 SAFE)
+# -----------------------------------------------------
+pool = AsyncConnectionPool(conninfo=DATABASE_URL, row_factory=dict_row)
 
 
 # -----------------------------------------------------
 # DATABASE INIT
 # -----------------------------------------------------
 async def init_db():
-    conn = await asyncpg.connect(DATABASE_URL)
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            email TEXT NOT NULL,
-            value INTEGER NOT NULL DEFAULT 128
-        );
-    """)
-    await conn.close()
+    async with pool.connection() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL,
+                value INTEGER NOT NULL DEFAULT 128
+            );
+        """)
+        await conn.commit()
     logging.info("DB initialized.")
 
 
@@ -54,10 +63,12 @@ class AgentAction(BaseModel):
 # HELPERS
 # -----------------------------------------------------
 async def fetch_all_users():
-    conn = await asyncpg.connect(DATABASE_URL)
-    rows = await conn.fetch("SELECT id, email, value FROM users ORDER BY id ASC")
-    await conn.close()
-    return [dict(r) for r in rows]
+    async with pool.connection() as conn:
+        rows = await conn.execute(
+            "SELECT id, email, value FROM users ORDER BY id ASC"
+        )
+        rows = await rows.fetchall()
+        return rows
 
 
 # -----------------------------------------------------
@@ -72,32 +83,44 @@ async def get_state():
 
 @app.post("/users")
 async def create_user(user: UserCreate):
-    conn = await asyncpg.connect(DATABASE_URL)
-    row = await conn.fetchrow(
-        "INSERT INTO users (email, value) VALUES ($1, $2) RETURNING id, email, value",
-        user.email, user.value
-    )
-    await conn.close()
-    return dict(row)
+    async with pool.connection() as conn:
+        row = await conn.execute(
+            """
+            INSERT INTO users (email, value)
+            VALUES (%s, %s)
+            RETURNING id, email, value
+            """,
+            (user.email, user.value)
+        )
+        row = await row.fetchone()
+        await conn.commit()
+        return row
 
 
 @app.put("/users/{user_id}")
 async def update_user(user_id: int, upd: UserUpdate):
-    conn = await asyncpg.connect(DATABASE_URL)
-    row = await conn.fetchrow(
-        "UPDATE users SET value=$1 WHERE id=$2 RETURNING id, email, value",
-        upd.value, user_id
-    )
-    await conn.close()
+    async with pool.connection() as conn:
+        row = await conn.execute(
+            """
+            UPDATE users
+            SET value=%s
+            WHERE id=%s
+            RETURNING id, email, value
+            """,
+            (upd.value, user_id)
+        )
+        row = await row.fetchone()
+        await conn.commit()
 
-    if not row:
-        raise HTTPException(404, "User not found")
+        if not row:
+            raise HTTPException(404, "User not found")
 
-    return dict(row)
+        return row
 
 
 # -----------------------------------------------------
-# FIXED: AGENT ACTION ENDPOINT (NOW ACCEPTS JSON BODY)
+# AGENT ACTION ENDPOINT (JSON BODY)
+# EXACTLY LIKE YOUR FILE
 # -----------------------------------------------------
 @app.post("/agent/action")
 async def agent_action(data: AgentAction):
@@ -107,27 +130,35 @@ async def agent_action(data: AgentAction):
     if action not in ("increment", "decrement"):
         raise HTTPException(400, "Invalid action")
 
-    conn = await asyncpg.connect(DATABASE_URL)
+    async with pool.connection() as conn:
+        if action == "increment":
+            row = await conn.execute(
+                """
+                UPDATE users
+                SET value = value + 1
+                WHERE id=%s
+                RETURNING id, email, value
+                """,
+                (user_id,)
+            )
+        else:
+            row = await conn.execute(
+                """
+                UPDATE users
+                SET value = value - 1
+                WHERE id=%s
+                RETURNING id, email, value
+                """,
+                (user_id,)
+            )
 
-    if action == "increment":
-        row = await conn.fetchrow("""
-            UPDATE users SET value = value + 1
-            WHERE id=$1
-            RETURNING id, email, value
-        """, user_id)
-    else:
-        row = await conn.fetchrow("""
-            UPDATE users SET value = value - 1
-            WHERE id=$1
-            RETURNING id, email, value
-        """, user_id)
+        row = await row.fetchone()
+        await conn.commit()
 
-    await conn.close()
+        if not row:
+            raise HTTPException(404, "User not found")
 
-    if not row:
-        raise HTTPException(404, "User not found")
-
-    return dict(row)
+        return row
 
 
 # -----------------------------------------------------
@@ -136,10 +167,16 @@ async def agent_action(data: AgentAction):
 @app.post("/random-user")
 async def random_user():
     email = generator.get_email()
-    conn = await asyncpg.connect(DATABASE_URL)
-    row = await conn.fetchrow(
-        "INSERT INTO users (email, value) VALUES ($1, 256) RETURNING id, email, value",
-        email
-    )
-    await conn.close()
-    return dict(row)
+
+    async with pool.connection() as conn:
+        row = await conn.execute(
+            """
+            INSERT INTO users (email, value)
+            VALUES (%s, 256)
+            RETURNING id, email, value
+            """,
+            (email,)
+        )
+        row = await row.fetchone()
+        await conn.commit()
+        return row
